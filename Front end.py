@@ -3,6 +3,19 @@ from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk, UnidentifiedImageError
 import cv2
 
+import streamlit as st
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing import image
+import numpy as np
+from fastai.vision.all import *
+
+# Load model
+# model= load_model('model.h5')
+#labels = ["Backpack","chair","File_Cabinet","Laptop","Mouse","Mug","Notebook","Pen","Table","Trash_Can"]
+learn = load_learner('model.pkl')
+
+
+
 root = tk.Tk()
 root.title("🤖 Aerius Interface")
 root.geometry("600x500")
@@ -147,34 +160,57 @@ cancel_btn.bind("<Leave>", on_leave)
 cancel_btn.pack(side="left", padx=10)
 
 
-# --- Upload Image Function ---
 def upload_image_next_screen():
-    file_path = filedialog.askopenfilename(title="Select an image",
-                                           filetypes=[("Image Files", "*.jpg;*.jpeg;*.png;*.bmp")])
+    file_path = filedialog.askopenfilename(
+        title="Select an image",
+        filetypes=[("Image Files", "*.jpg;*.jpeg;*.png;*.bmp")]
+    )
     if not file_path:
         return
+
     try:
         img = Image.open(file_path)
     except UnidentifiedImageError:
         messagebox.showerror("Error", "Invalid image format!")
         return
 
-    img.thumbnail((500,300))
+    # --- Display the uploaded image ---
+    img.thumbnail((500, 300))
     img_tk = ImageTk.PhotoImage(img)
     img_label.config(image=img_tk)
     img_label.image = img_tk
 
+    # --- Prepare image for model prediction ---
+    fastai_img = PILImage.create(file_path)
+    fastai_img = fastai_img.resize((224, 224))
+
+    # --- Run model prediction ---
+    pred, pred_idx, probs = learn.predict(fastai_img)
+
+    # --- Get prediction label and confidence ---
+    pred_label = str(pred)
+    confidence = float(probs[pred_idx]) * 100  # convert to percentage
+
+    # --- Detect dominant color (approximate) ---
+    img_cv = cv2.imread(file_path)
+    img_cv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
+    avg_color = cv2.mean(img_cv)[:3]
+    avg_color = tuple(map(int, avg_color))
+    dominant_color = f"RGB{avg_color}"
+
+    # --- Update details label ---
     details_label.config(
-        text=f"Image name: {file_path.split('/')[-1]}\n"
-             f"Image size: {img.size}\n"
-             f"Confidence: TBD\n"
-             f"Colour: TBD"
+        text=f"Prediction: {pred_label}\n"
+             f"Confidence: {confidence:.2f}%\n"
+             f"Dominant Colour: {dominant_color}\n"
+             f"Image Size: {img.size}"
     )
 
     main_frame.pack_forget()
     detail_frame.pack(fill="both", expand=True)
 
 
+# --- Function to open webcam ----
 def open_webcam():
     cam = None
     for i in range(3):
@@ -255,7 +291,10 @@ def open_webcam():
     cv2.destroyAllWindows()
 
     if captured_image is not None and captured_image.size > 0:
+        #Convert OpenCV image (BGR) to RGB
         img = cv2.cvtColor(captured_image, cv2.COLOR_BGR2RGB)
+
+        #Resize and normalize+
         img = Image.fromarray(img)
         img.thumbnail((500, 300))
         img_tk = ImageTk.PhotoImage(img)
@@ -263,11 +302,25 @@ def open_webcam():
         img_label.config(image=img_tk)
         img_label.image = img_tk
 
+ # --- prepare image for model prediction ----
+        fastai_img= PILImage.create(captured_image)
+        fastai_img= fastai_img.resize((224,224))
+
+        #Run model prediction
+        pred, pred_idx, probs= learn.predict(fastai_img)
+        #---- get prediction label and confidence ----
+        pred_label= str(pred)
+        confidence= float(probs[pred_idx]) *100 #convert to percentage
+        # --- detect dominant color approx. ----
+        avg_color= cv2.mean(cv2.cvtColor(captured_image, cv2.COLOR_BGR2RGB))
+        avg_color= tuple(map(int, avg_color))
+        dominant_color=  f"RGB{avg_color}"
+
         details_label.config(
-            text=f"Image captured from webcam\n"
-                 f"Image size: {img.size}\n"
-                 f"Confidence: TBD\n"
-                 f"Colour: TBD"
+            text=f"Prediction: {pred_label}\n"
+                 f"Confidence: {confidence:.2f}%\n"
+                 f"Dominant Colour: {dominant_color}\n"
+                 f"Image Size: {img.size}"
         )
 
         main_frame.pack_forget()
