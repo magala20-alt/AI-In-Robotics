@@ -3,6 +3,19 @@ from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk, UnidentifiedImageError
 import cv2
 
+import streamlit as st
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing import image
+import numpy as np
+from fastai.vision.all import *
+
+# Load model
+# model= load_model('model.h5')
+#labels = ["Backpack","chair","File_Cabinet","Laptop","Mouse","Mug","Notebook","Pen","Table","Trash_Can"]
+learn = load_learner('model.pkl')
+
+
+
 root = tk.Tk()
 root.title("🤖 Aerius Interface")
 root.geometry("600x500")
@@ -147,37 +160,171 @@ cancel_btn.bind("<Leave>", on_leave)
 cancel_btn.pack(side="left", padx=10)
 
 
-# --- Upload Image Function ---
 def upload_image_next_screen():
-    file_path = filedialog.askopenfilename(title="Select an image",
-                                           filetypes=[("Image Files", "*.jpg;*.jpeg;*.png;*.bmp")])
+    file_path = filedialog.askopenfilename(
+        title="Select an image",
+        filetypes=[("Image Files", "*.jpg;*.jpeg;*.png;*.bmp")]
+    )
     if not file_path:
         return
+
     try:
         img = Image.open(file_path)
     except UnidentifiedImageError:
         messagebox.showerror("Error", "Invalid image format!")
         return
 
-    img.thumbnail((500,300))
+    # --- Display the uploaded image ---
+    img.thumbnail((500, 300))
     img_tk = ImageTk.PhotoImage(img)
     img_label.config(image=img_tk)
     img_label.image = img_tk
 
+    # --- Prepare image for model prediction ---
+    fastai_img = PILImage.create(file_path)
+    fastai_img = fastai_img.resize((224, 224))
+
+    # --- Run model prediction ---
+    pred, pred_idx, probs = learn.predict(fastai_img)
+
+    # --- Get prediction label and confidence ---
+    pred_label = str(pred)
+    confidence = float(probs[pred_idx]) * 100  # convert to percentage
+
+    # --- Detect dominant color (approximate) ---
+    img_cv = cv2.imread(file_path)
+    img_cv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
+    avg_color = cv2.mean(img_cv)[:3]
+    avg_color = tuple(map(int, avg_color))
+    dominant_color = f"RGB{avg_color}"
+
+    # --- Update details label ---
     details_label.config(
-        text=f"Image name: {file_path.split('/')[-1]}\n"
-             f"Image size: {img.size}\n"
-             f"Confidence: TBD\n"
-             f"Colour: TBD"
+        text=f"Prediction: {pred_label}\n"
+             f"Confidence: {confidence:.2f}%\n"
+             f"Dominant Colour: {dominant_color}\n"
+             f"Image Size: {img.size}"
     )
 
     main_frame.pack_forget()
     detail_frame.pack(fill="both", expand=True)
 
 
-# --- Webcam Placeholder ---
+# --- Function to open webcam ----
 def open_webcam():
-    messagebox.showinfo("Info", "Webcam function placeholder.")
+    cam = None
+    for i in range(3):
+        temp_cam = cv2.VideoCapture(i)
+        if temp_cam.isOpened():
+            cam = temp_cam
+            break
+
+    if not cam:
+        messagebox.showerror("Error", "No webcam found!")
+        return
+
+    cv2.namedWindow("Webcam Feed")
+
+    rect_start = None
+    rect_end = None
+    drawing = False
+    captured_image = None
+    frame_for_draw = None
+
+    def draw_rectangle(event, x, y, flags, param):
+        nonlocal rect_start, rect_end, drawing, captured_image, frame_for_draw
+        frame = param
+        if event == cv2.EVENT_LBUTTONDOWN:
+            rect_start = (x, y)
+            drawing = True
+        elif event == cv2.EVENT_MOUSEMOVE and drawing:
+            frame_for_draw = frame.copy()
+            cv2.rectangle(frame_for_draw, rect_start, (x, y), (0, 255, 0), 2)
+        elif event == cv2.EVENT_LBUTTONUP:
+            rect_end = (x, y)
+            drawing = False
+            if rect_start and rect_end:
+                x1, y1 = rect_start
+                x2, y2 = rect_end
+                x_min, x_max = sorted([x1, x2])
+                y_min, y_max = sorted([y1, y2])
+                captured_image = frame[y_min:y_max, x_min:x_max]
+                # close the webcam window automatically after capture
+                cv2.destroyAllWindows()
+
+    while True:
+        ret, frame = cam.read()
+        if not ret:
+            break
+
+        display_frame = frame.copy()
+
+        # draw a faint crosshair in the center
+        h, w, _ = frame.shape
+        cv2.line(display_frame, (w // 2 - 20, h // 2), (w // 2 + 20, h // 2), (0, 255, 255), 1)
+        cv2.line(display_frame, (w // 2, h // 2 - 20), (w // 2, h // 2 + 20), (0, 255, 255), 1)
+
+        cv2.setMouseCallback("Webcam Feed", draw_rectangle, frame)
+
+        if frame_for_draw is not None and drawing:
+            display_frame = frame_for_draw
+
+        cv2.imshow("Webcam Feed", display_frame)
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            captured_image = None
+            break
+        elif key == ord(' '):
+            captured_image = frame.copy()
+            cv2.destroyAllWindows()
+            break
+
+        # if window is closed manually
+        if cv2.getWindowProperty("Webcam Feed", cv2.WND_PROP_VISIBLE) < 1:
+            break
+
+        # stop loop automatically if we have a captured image
+        if captured_image is not None:
+            break
+
+    cam.release()
+    cv2.destroyAllWindows()
+
+    if captured_image is not None and captured_image.size > 0:
+        #Convert OpenCV image (BGR) to RGB
+        img = cv2.cvtColor(captured_image, cv2.COLOR_BGR2RGB)
+
+        #Resize and normalize+
+        img = Image.fromarray(img)
+        img.thumbnail((500, 300))
+        img_tk = ImageTk.PhotoImage(img)
+
+        img_label.config(image=img_tk)
+        img_label.image = img_tk
+
+ # --- prepare image for model prediction ----
+        fastai_img= PILImage.create(captured_image)
+        fastai_img= fastai_img.resize((224,224))
+
+        #Run model prediction
+        pred, pred_idx, probs= learn.predict(fastai_img)
+        #---- get prediction label and confidence ----
+        pred_label= str(pred)
+        confidence= float(probs[pred_idx]) *100 #convert to percentage
+        # --- detect dominant color approx. ----
+        avg_color= cv2.mean(cv2.cvtColor(captured_image, cv2.COLOR_BGR2RGB))
+        avg_color= tuple(map(int, avg_color))
+        dominant_color=  f"RGB{avg_color}"
+
+        details_label.config(
+            text=f"Prediction: {pred_label}\n"
+                 f"Confidence: {confidence:.2f}%\n"
+                 f"Dominant Colour: {dominant_color}\n"
+                 f"Image Size: {img.size}"
+        )
+
+        main_frame.pack_forget()
+        detail_frame.pack(fill="both", expand=True)
 
 
 # --- Main Menu Buttons ---
@@ -190,5 +337,3 @@ create_button_with_info(main_frame, "CLOSE SYSTEM", close_app,
 
 
 root.mainloop()
-
-
