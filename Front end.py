@@ -4,21 +4,37 @@ from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk, UnidentifiedImageError
 import cv2
 
-import streamlit as st
-from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing import image
+
 import numpy as np
 from fastai.vision.all import *
+import cv2, time
+from fastai.vision.all import PILImage, Resize, ResizeMethod
 import torch
 
 # Load model
-# model= load_model('model.h5')
-#labels = ["Backpack","chair","File_Cabinet","Laptop","Mouse","Mug","Notebook","Pen","Table","Trash_Can"]
-learn = load_learner('model.pkl')
-learn.to('cuda') # to use GPU instead of CPU
+learn = load_learner('OfficeHomeDataset_10072016/model.pkl')
+learn.to('cpu')
+
+# ---- preparing image for model ----
+def prepare_model_for_model (cv_img,learn, resize_size=460):
+    # Convert BGR to RGB
+    img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+
+    # Convert to FastAI PILImage
+    pil_img = PILImage.create(img_rgb)
+
+    # Apply same resizing transform as training
+    resize_tfm = Resize(resize_size, method=ResizeMethod.Pad, pad_mode='zeros')
+    fastai_img = resize_tfm(pil_img)
+
+    # Create a test DataLoader to apply all dls transforms correctly
+    dl = learn.dls.test_dl([fastai_img])
+
+    return dl, fastai_img
 
 
 
+# --- Main interface -----------
 root = tk.Tk()
 root.title("🤖 Aerius Interface")
 root.geometry("600x500")
@@ -184,15 +200,15 @@ def upload_image_next_screen():
     img_label.image = img_tk
 
     # --- Prepare image for model prediction ---
-    fastai_img = PILImage.create(file_path)
-    fastai_img = fastai_img.resize((224, 224))
+    dl, fastai_img = prepare_model_for_model(img_tk, learn)
 
     # --- Run model prediction ---
-    pred, pred_idx, probs = learn.predict(fastai_img)
 
-    # --- Get prediction label and confidence ---
-    pred_label = str(pred)
-    confidence = float(probs[pred_idx]) * 100  # convert to percentage
+    # Run prediction
+    preds, *_ = learn.get_preds(dl=dl)
+    pred_idx = preds.argmax(dim=1)[0].item()
+    pred_label = learn.dls.vocab[pred_idx]
+    confidence = float(preds[0][pred_idx]) * 100
 
     # --- Detect dominant color (approximate) ---
     img_cv = cv2.imread(file_path)
@@ -215,6 +231,12 @@ def upload_image_next_screen():
 
 # --- Function to open webcam ----
 def open_webcam():
+    import time
+    import torch
+    import cv2
+    from PIL import Image
+    from fastai.vision.all import PILImage
+
     cam = None
     for i in range(3):
         temp_cam = cv2.VideoCapture(i)
@@ -228,19 +250,26 @@ def open_webcam():
 
     cv2.namedWindow("Webcam Feed")
 
+    # Variables for rectangle drawing
     rect_start = None
     rect_end = None
     drawing = False
     captured_image = None
     frame_for_draw = None
 
+    # Live prediction control
     last_prediction_time = time.time()
-    prediction_interval = 1.5  # seconds between predictions to reduce lag
+    prediction_interval = 1.0  # seconds between predictions
     last_pred_label = ""
     last_confidence = 0.0
 
+    # GPU setup
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    learn.dls.device = device
+
+    # --- Mouse callback ---
     def draw_rectangle(event, x, y, flags, param):
-        nonlocal rect_start, rect_end, drawing, captured_image, frame_for_draw
+        nonlocal rect_start, rect_end, drawing, frame_for_draw
         frame = param
         if event == cv2.EVENT_LBUTTONDOWN:
             rect_start = (x, y)
@@ -251,112 +280,129 @@ def open_webcam():
         elif event == cv2.EVENT_LBUTTONUP:
             rect_end = (x, y)
             drawing = False
-            if rect_start and rect_end:
-                x1, y1 = rect_start
-                x2, y2 = rect_end
-                x_min, x_max = sorted([x1, x2])
-                y_min, y_max = sorted([y1, y2])
-                captured_image = frame[y_min:y_max, x_min:x_max]
-                # close the webcam window automatically after capture
-                cv2.destroyAllWindows()
 
     while True:
         ret, frame = cam.read()
-        if not ret:
-            break
+        if not ret or frame is None or frame.size == 0:
+            continue  # Skip invalid frames
 
         display_frame = frame.copy()
 
-        # draw a faint crosshair in the center
+        # Draw faint crosshair
         h, w, _ = frame.shape
         cv2.line(display_frame, (w // 2 - 20, h // 2), (w // 2 + 20, h // 2), (0, 255, 255), 1)
         cv2.line(display_frame, (w // 2, h // 2 - 20), (w // 2, h // 2 + 20), (0, 255, 255), 1)
 
         cv2.setMouseCallback("Webcam Feed", draw_rectangle, frame)
 
-        # ------- LIVE PREDICTION
-        current_time = time.time()
-        if current_time-last_prediction_time > prediction_interval:
-            try:
-                # Prepare frame for model
-                resized = cv2.resize(frame, (224, 224))
-                fastai_img = PILImage.create(resized)
-                pred, pred_idx, probs = learn.predict(fastai_img)
+        if frame_for_draw is not None and drawing:
+            display_frame = frame_for_draw
 
-                last_pred_label = str(pred)
-                last_confidence = float(probs[pred_idx]) * 100
-                last_prediction_time = current_time
+        # --- LIVE PREDICTION ---
+        current_time = time.time()
+        if rect_start and rect_end and (current_time - last_prediction_time > prediction_interval):
+            try:
+                x1, y1 = rect_start
+                x2, y2 = rect_end
+                x_min, x_max = sorted([x1, x2])
+                y_min, y_max = sorted([y1, y2])
+                cropped_frame = frame[y_min:y_max, x_min:x_max]
+
+                if cropped_frame is not None and cropped_frame.size > 0:
+                    # Convert BGR → RGB
+                    img_rgb = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2RGB)
+                    pil_img = Image.fromarray(img_rgb)
+                    resized_pil = pil_img.resize((460, 460))
+                    fastai_img = PILImage.create(resized_pil)  # ✅ FastAI PILImage
+
+                    # Predict
+                    pred, pred_idx, probs = learn.predict(fastai_img)
+                    last_pred_label = str(pred)
+                    last_confidence = float(probs[pred_idx]) * 100
+                    last_prediction_time = current_time
+                else:
+                    print("Warning: Bounding box empty, skipping prediction")
 
             except Exception as e:
                 print(f"Prediction error: {e}")
 
-             # Display live prediction text on webcam
-            if last_pred_label:
-                cv2.putText(display_frame, f"{last_pred_label} ({last_confidence:.1f}%)",
-                (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
-
-        # Draw rectangle if user is selecting
-        if frame_for_draw is not None and drawing:
-            display_frame = frame_for_draw
+        # Display live prediction text
+        if last_pred_label:
+            cv2.putText(
+                display_frame,
+                f"{last_pred_label} ({last_confidence:.1f}%)",
+                (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (0, 255, 0),
+                2,
+                cv2.LINE_AA
+            )
 
         cv2.imshow("Webcam Feed", display_frame)
         key = cv2.waitKey(1) & 0xFF
-        #Quit webcam
+
+        # Quit webcam
         if key == ord('q'):
             captured_image = None
             break
-        #manual capture
+
+        # Manual capture
         elif key == ord(' '):
-            captured_image = frame.copy()
+            if rect_start and rect_end:
+                x1, y1 = rect_start
+                x2, y2 = rect_end
+                x_min, x_max = sorted([x1, x2])
+                y_min, y_max = sorted([y1, y2])
+                captured_image = frame[y_min:y_max, x_min:x_max]
+            else:
+                captured_image = frame.copy()
             cv2.destroyAllWindows()
             break
 
-        # if window is closed manually
+        # Window closed manually
         if cv2.getWindowProperty("Webcam Feed", cv2.WND_PROP_VISIBLE) < 1:
-            break
-
-        # stop loop automatically if we have a captured image
-        if captured_image is not None:
             break
 
     cam.release()
     cv2.destroyAllWindows()
 
+    # --- Process captured image for UI ---
     if captured_image is not None and captured_image.size > 0:
-        #Convert OpenCV image (BGR) to RGB
-        img = cv2.cvtColor(captured_image, cv2.COLOR_BGR2RGB)
+        img_rgb = cv2.cvtColor(captured_image, cv2.COLOR_BGR2RGB)
+        pil_img = PILImage.create(img_rgb)
+        fastai_img = pil_img.resize((460, 460))
 
-        #Resize and normalize+
-        img = Image.fromarray(img)
-        img.thumbnail((500, 300))
-        img_tk = ImageTk.PhotoImage(img)
+        pred, pred_idx, probs = learn.predict(fastai_img)
+        pred_label = str(pred)
+        confidence = float(probs[pred_idx]) * 100
 
+        # Dominant color
+        avg_color = cv2.mean(cv2.cvtColor(captured_image, cv2.COLOR_BGR2RGB))
+        avg_color = tuple(map(int, avg_color))
+        dominant_color = f"RGB{avg_color}"
+
+        # Display in Tkinter
+        img_display = Image.fromarray(img_rgb)
+        img_display.thumbnail((500, 300))
+        img_tk = ImageTk.PhotoImage(img_display)
         img_label.config(image=img_tk)
         img_label.image = img_tk
 
- # --- prepare image for model prediction ----
-        fastai_img= PILImage.create(captured_image)
-        fastai_img= fastai_img.resize((224,224))
-
-        #Run model prediction
-        pred, pred_idx, probs= learn.predict(fastai_img)
-        #---- get prediction label and confidence ----
-        pred_label= str(pred)
-        confidence= float(probs[pred_idx]) *100 #convert to percentage
-        # --- detect dominant color approx. ----
-        avg_color= cv2.mean(cv2.cvtColor(captured_image, cv2.COLOR_BGR2RGB))
-        avg_color= tuple(map(int, avg_color))
-        dominant_color=  f"RGB{avg_color}"
-
+        # Update details
         details_label.config(
             text=f"Prediction: {pred_label}\n"
                  f"Confidence: {confidence:.2f}%\n"
                  f"Dominant Colour: {dominant_color}\n"
-                 f"Image Size: {img.size}"
+                 f"Image Size: {img_display.size}"
         )
 
         main_frame.pack_forget()
         detail_frame.pack(fill="both", expand=True)
+
+
+
+
 
 
 # --- Main Menu Buttons ---
