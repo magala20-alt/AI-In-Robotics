@@ -1,4 +1,5 @@
 import tkinter as tk
+from datetime import time
 from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk, UnidentifiedImageError
 import cv2
@@ -8,11 +9,13 @@ from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing import image
 import numpy as np
 from fastai.vision.all import *
+import torch
 
 # Load model
 # model= load_model('model.h5')
 #labels = ["Backpack","chair","File_Cabinet","Laptop","Mouse","Mug","Notebook","Pen","Table","Trash_Can"]
 learn = load_learner('model.pkl')
+learn.to('cuda') # to use GPU instead of CPU
 
 
 
@@ -231,6 +234,11 @@ def open_webcam():
     captured_image = None
     frame_for_draw = None
 
+    last_prediction_time = time.time()
+    prediction_interval = 1.5  # seconds between predictions to reduce lag
+    last_pred_label = ""
+    last_confidence = 0.0
+
     def draw_rectangle(event, x, y, flags, param):
         nonlocal rect_start, rect_end, drawing, captured_image, frame_for_draw
         frame = param
@@ -266,14 +274,38 @@ def open_webcam():
 
         cv2.setMouseCallback("Webcam Feed", draw_rectangle, frame)
 
+        # ------- LIVE PREDICTION
+        current_time = time.time()
+        if current_time-last_prediction_time > prediction_interval:
+            try:
+                # Prepare frame for model
+                resized = cv2.resize(frame, (224, 224))
+                fastai_img = PILImage.create(resized)
+                pred, pred_idx, probs = learn.predict(fastai_img)
+
+                last_pred_label = str(pred)
+                last_confidence = float(probs[pred_idx]) * 100
+                last_prediction_time = current_time
+
+            except Exception as e:
+                print(f"Prediction error: {e}")
+
+             # Display live prediction text on webcam
+            if last_pred_label:
+                cv2.putText(display_frame, f"{last_pred_label} ({last_confidence:.1f}%)",
+                (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+
+        # Draw rectangle if user is selecting
         if frame_for_draw is not None and drawing:
             display_frame = frame_for_draw
 
         cv2.imshow("Webcam Feed", display_frame)
         key = cv2.waitKey(1) & 0xFF
+        #Quit webcam
         if key == ord('q'):
             captured_image = None
             break
+        #manual capture
         elif key == ord(' '):
             captured_image = frame.copy()
             cv2.destroyAllWindows()
