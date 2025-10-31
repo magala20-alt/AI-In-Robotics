@@ -10,7 +10,7 @@ import torch
 import threading
 
 # Load model
-learn = load_learner('OfficeHomeDataset_10072016/model.pkl')
+learn = load_learner('OfficeHomeDataset_1/model3.pkl')
 learn.to('cpu')
 print(f"Model type: {type(learn.model)}")
 print(f"Classes: {learn.dls.vocab if hasattr(learn.dls, 'vocab') else 'No vocab found'}")
