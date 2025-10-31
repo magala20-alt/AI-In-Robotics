@@ -3,45 +3,74 @@ from datetime import time
 from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk, UnidentifiedImageError
 import cv2
-
-
 import numpy as np
 from fastai.vision.all import *
-import cv2, time
-from fastai.vision.all import PILImage, Resize, ResizeMethod
+import time
 import torch
 import threading
 
 # Load model
-learn = load_learner('OfficeHomeDataset_10072016/model.pkl')
+learn = load_learner('OfficeHomeDataset_1/model3.pkl')
 learn.to('cpu')
-print(type(learn.model))
+print(f"Model type: {type(learn.model)}")
+print(f"Classes: {learn.dls.vocab if hasattr(learn.dls, 'vocab') else 'No vocab found'}")
 
-# ---- preparing image for model ----
-def prepare_image_for_model(cv_img, learn, resize_size=460):
 
-    # 1️⃣ Validate input type
-    if cv_img is None:
-        raise ValueError("Received empty image (cv_img is None)")
+# ---- Preparing image for model (FIXED VERSION) ----
+def prepare_image_for_model(cv_img, learn, resize_size=460, crop_size=224):
+    """
+    Manually preprocess image to match training pipeline:
+    1. Resize to 460x460 with padding (item_tfms)
+    2. Center crop to 224x224 (batch_tfms)
+    3. Normalize with ImageNet stats (batch_tfms)
+    """
 
-    # 2️⃣ Convert BGR (OpenCV default) → RGB
+    # 1️⃣ Validate input
+    if cv_img is None or cv_img.size == 0:
+        raise ValueError("Received empty image")
+
+    # 2️⃣ Convert BGR → RGB
     img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
 
-    # 3️⃣ Convert to PIL (FastAI uses PIL internally)
+    # 3️⃣ Convert to PIL
     pil_img = Image.fromarray(img_rgb)
 
-    # 4️⃣ Resize similarly to training
-    pil_img = pil_img.resize((resize_size, resize_size))
+    # 4️⃣ Resize with padding to 460x460 (match training)
+    w, h = pil_img.size
+    if w > h:
+        new_w = resize_size
+        new_h = int(h * resize_size / w)
+    else:
+        new_h = resize_size
+        new_w = int(w * resize_size / h)
 
-    # 5️⃣ Create a DataLoader for prediction
-    dl = learn.dls.test_dl([pil_img])
+    pil_img = pil_img.resize((new_w, new_h), Image.BILINEAR)
 
-    # 6️⃣ Wrap image for potential display / debug
-    fastai_img = PILImage.create(pil_img)
+    # Add zero padding
+    padded_img = Image.new('RGB', (resize_size, resize_size), (0, 0, 0))
+    paste_x = (resize_size - new_w) // 2
+    paste_y = (resize_size - new_h) // 2
+    padded_img.paste(pil_img, (paste_x, paste_y))
 
-    return dl, fastai_img
+    # 5️⃣ Convert to tensor and normalize
+    img_array = np.array(padded_img).astype(np.float32) / 255.0
+    img_tensor = torch.from_numpy(img_array).permute(2, 0, 1)
 
+    # Apply ImageNet normalization
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+    img_tensor = (img_tensor - mean) / std
 
+    # 6️⃣ Center crop to 224x224 (match training)
+    c, h, w = img_tensor.shape
+    start_h = (h - crop_size) // 2
+    start_w = (w - crop_size) // 2
+    img_tensor = img_tensor[:, start_h:start_h + crop_size, start_w:start_w + crop_size]
+
+    # 7️⃣ Add batch dimension
+    img_tensor = img_tensor.unsqueeze(0)
+
+    return img_tensor, padded_img
 
 
 # --- Main interface -----------
@@ -50,12 +79,15 @@ root.title("🤖 Aerius Interface")
 root.geometry("600x500")
 root.config(bg="#1a1a1a")
 
+
 # --- Hover Effects ---
 def on_enter(e):
     e.widget["bg"] = "#1e90ff"
 
+
 def on_leave(e):
     e.widget["bg"] = "#00bfff"
+
 
 # --- Tooltip Class ---
 class ToolTip:
@@ -110,9 +142,11 @@ welcome_label = tk.Label(
 )
 welcome_label.pack(pady=40)
 
+
 def show_main_screen():
     welcome_frame.pack_forget()
     main_frame.pack(fill="both", expand=True)
+
 
 welcome_button = tk.Button(
     welcome_frame,
@@ -130,12 +164,12 @@ welcome_button.pack(pady=20)
 
 welcome_frame.pack(fill="both", expand=True)
 
-
 # --- Main Frame ---
 main_frame = tk.Frame(root, bg="#1a1a1a")
 main_label = tk.Label(main_frame, text="Select Operation Mode:", font=("Consolas", 20, "bold"),
                       fg="#00ffff", bg="#1a1a1a")
 main_label.pack(pady=30)
+
 
 # --- Helper to create buttons with tooltips ---
 def create_button_with_info(parent, text, command, tooltip_text):
@@ -151,7 +185,7 @@ def create_button_with_info(parent, text, command, tooltip_text):
     )
     button.bind("<Enter>", on_enter)
     button.bind("<Leave>", on_leave)
-    button.pack(side="left", padx=(0,5))
+    button.pack(side="left", padx=(0, 5))
 
     info = tk.Label(frame, text="❓", font=("Consolas", 14, "bold"), fg="#00ffff", bg="#1a1a1a")
     info.pack(side="left")
@@ -172,9 +206,11 @@ details_label.pack(pady=10)
 button_frame = tk.Frame(detail_frame, bg="#1a1a1a")
 button_frame.pack(pady=20)
 
+
 def go_previous():
     detail_frame.pack_forget()
     main_frame.pack(fill="both", expand=True)
+
 
 prev_btn = tk.Button(button_frame, text="Previous", font=("Consolas", 12, "bold"),
                      bg="#00bfff", fg="white", width=12, command=go_previous)
@@ -189,6 +225,7 @@ cancel_btn.bind("<Leave>", on_leave)
 cancel_btn.pack(side="left", padx=10)
 
 
+# --- FIXED: Upload Image Function ---
 def upload_image_next_screen():
     file_path = filedialog.askopenfilename(
         title="Select an image",
@@ -203,23 +240,50 @@ def upload_image_next_screen():
         messagebox.showerror("Error", "Invalid image format!")
         return
 
+    # Store original size
+    original_size = img.size
+
     # --- Display the uploaded image ---
-    img.thumbnail((500, 300))
-    img_tk = ImageTk.PhotoImage(img)
+    img_display = img.copy()
+    img_display.thumbnail((500, 300))
+    img_tk = ImageTk.PhotoImage(img_display)
     img_label.config(image=img_tk)
     img_label.image = img_tk
 
-    # --- Run model prediction directly on file ---
+    # --- Run model prediction with manual preprocessing ---
     try:
-        pred, pred_idx, probs = learn.predict(file_path)
-        pred_label = str(pred)
-        confidence = float(probs[pred_idx]) * 100
+        # Load with OpenCV
+        cv_img = cv2.imread(file_path)
+        if cv_img is None:
+            raise ValueError("Failed to load image")
+
+        # Manually preprocess (bypass broken transforms)
+        img_tensor, processed_img = prepare_image_for_model(cv_img, learn, resize_size=460, crop_size=224)
+
+        # Direct model inference
+        learn.model.eval()
+        with torch.no_grad():
+            output = learn.model(img_tensor.to('cpu'))
+            probs = torch.nn.functional.softmax(output[0], dim=0)
+            pred_idx = probs.argmax().item()
+            confidence = float(probs[pred_idx]) * 100
+
+        # Get class label
+        if hasattr(learn.dls, 'vocab'):
+            pred_label = str(learn.dls.vocab[pred_idx])
+        else:
+            pred_label = f"Class_{pred_idx}"
+
+        print(f"✅ Prediction: {pred_label}, Confidence: {confidence:.2f}%")
+
     except Exception as e:
-        messagebox.showerror("Prediction Error", str(e))
+        import traceback
+        error_msg = f"Prediction Error:\n{str(e)}\n\n{traceback.format_exc()}"
+        print(error_msg)
+        messagebox.showerror("Prediction Error", error_msg)
         return
 
     # --- Detect dominant color ---
-    cv_img = cv2.imread(file_path)
     img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
     avg_color = tuple(map(int, cv2.mean(img_rgb)[:3]))
     dominant_color = f"RGB{avg_color}"
@@ -229,18 +293,15 @@ def upload_image_next_screen():
         text=f"Prediction: {pred_label}\n"
              f"Confidence: {confidence:.2f}%\n"
              f"Dominant Colour: {dominant_color}\n"
-             f"Image Size: {img.size}"
+             f"Image Size: {original_size}"
     )
 
     main_frame.pack_forget()
     detail_frame.pack(fill="both", expand=True)
 
 
-
-# --- Function to open webcam ----
+# --- FIXED: Webcam Function ---
 def open_webcam():
-
-
     def webcam_thread():
         cam = None
         for i in range(3):
@@ -296,7 +357,7 @@ def open_webcam():
             if frame_for_draw is not None and drawing:
                 display_frame = frame_for_draw
 
-            # --- Live Prediction ---
+            # --- Live Prediction (FIXED) ---
             current_time = time.time()
             if rect_start and rect_end and (current_time - last_prediction_time > prediction_interval):
                 try:
@@ -307,11 +368,23 @@ def open_webcam():
                     cropped_frame = frame[y_min:y_max, x_min:x_max]
 
                     if cropped_frame is not None and cropped_frame.size > 0:
-                        pil_img = Image.fromarray(cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2RGB))
-                        pred, pred_idx, probs = learn.predict(pil_img)
-                        last_pred_label = str(pred)
-                        last_confidence = float(probs[pred_idx]) * 100
-                        last_prediction_time = current_time
+                        # Manual preprocessing
+                        img_tensor, _ = prepare_image_for_model(cropped_frame, learn, resize_size=460, crop_size=224)
+
+                        # Direct inference
+                        learn.model.eval()
+                        with torch.no_grad():
+                            output = learn.model(img_tensor.to('cpu'))
+                            probs = torch.nn.functional.softmax(output[0], dim=0)
+                            pred_idx = probs.argmax().item()
+
+                            if hasattr(learn.dls, 'vocab'):
+                                last_pred_label = str(learn.dls.vocab[pred_idx])
+                            else:
+                                last_pred_label = f"Class_{pred_idx}"
+
+                            last_confidence = float(probs[pred_idx]) * 100
+                            last_prediction_time = current_time
                 except Exception as e:
                     print(f"Prediction error: {e}")
 
@@ -346,38 +419,48 @@ def open_webcam():
         cam.release()
         cv2.destroyAllWindows()
 
+        # Process captured image (FIXED)
         if captured_image is not None and captured_image.size > 0:
-            img_rgb = cv2.cvtColor(captured_image, cv2.COLOR_BGR2RGB)
-            pil_img = Image.fromarray(img_rgb)
-            pred, pred_idx, probs = learn.predict(pil_img)
-            pred_label = str(pred)
-            confidence = float(probs[pred_idx]) * 100
+            try:
+                img_tensor, _ = prepare_image_for_model(captured_image, learn, resize_size=460, crop_size=224)
 
-            avg_color = tuple(map(int, cv2.mean(img_rgb)[:3]))
-            dominant_color = f"RGB{avg_color}"
+                learn.model.eval()
+                with torch.no_grad():
+                    output = learn.model(img_tensor.to('cpu'))
+                    probs = torch.nn.functional.softmax(output[0], dim=0)
+                    pred_idx = probs.argmax().item()
 
-            img_display = pil_img.copy()
-            img_display.thumbnail((500, 300))
-            img_tk = ImageTk.PhotoImage(img_display)
-            img_label.config(image=img_tk)
-            img_label.image = img_tk
+                    if hasattr(learn.dls, 'vocab'):
+                        pred_label = str(learn.dls.vocab[pred_idx])
+                    else:
+                        pred_label = f"Class_{pred_idx}"
 
-            details_label.config(
-                text=f"Prediction: {pred_label}\n"
-                     f"Confidence: {confidence:.2f}%\n"
-                     f"Dominant Colour: {dominant_color}\n"
-                     f"Image Size: {img_display.size}"
-            )
+                    confidence = float(probs[pred_idx]) * 100
 
-            main_frame.pack_forget()
-            detail_frame.pack(fill="both", expand=True)
+                img_rgb = cv2.cvtColor(captured_image, cv2.COLOR_BGR2RGB)
+                avg_color = tuple(map(int, cv2.mean(img_rgb)[:3]))
+                dominant_color = f"RGB{avg_color}"
+
+                pil_img = Image.fromarray(img_rgb)
+                img_display = pil_img.copy()
+                img_display.thumbnail((500, 300))
+                img_tk = ImageTk.PhotoImage(img_display)
+                img_label.config(image=img_tk)
+                img_label.image = img_tk
+
+                details_label.config(
+                    text=f"Prediction: {pred_label}\n"
+                         f"Confidence: {confidence:.2f}%\n"
+                         f"Dominant Colour: {dominant_color}\n"
+                         f"Image Size: {pil_img.size}"
+                )
+
+                main_frame.pack_forget()
+                detail_frame.pack(fill="both", expand=True)
+            except Exception as e:
+                print(f"Error processing captured image: {e}")
 
     threading.Thread(target=webcam_thread, daemon=True).start()
-
-
-
-
-
 
 
 # --- Main Menu Buttons ---
@@ -387,6 +470,5 @@ create_button_with_info(main_frame, "USE WEBCAM", open_webcam,
                         "Activate webcam feed (press Q to close).")
 create_button_with_info(main_frame, "CLOSE SYSTEM", close_app,
                         "Exit the AI Robot Interface.")
-
 
 root.mainloop()
