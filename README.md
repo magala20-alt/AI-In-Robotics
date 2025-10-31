@@ -27,6 +27,14 @@ The interface shows:
 ✅ GPU acceleration supported (if available)
 
 ✅ Simple Tkinter interface
+## How to Use system
+✔️ Click Upload image to open file explorer and predict image.
+
+✔️ Click "open webcam", allow permission from antivirus and click and drag to draw bounding box on object.
+
+✔️ Press space bar to capture image and activate prediction.
+
+✔️ Click "Close system" to exit the system
 
 ## 📦 Requirements
 1️⃣ Install Python
@@ -35,8 +43,8 @@ You can check with:
     python --version
 
 2️⃣ Clone this repository
-    git clone https://github.com/yourusername/yourprojectname.git
-    cd yourprojectname
+    git clone [https://github.com/magala20-alt/AI-In-Robotics]
+    cd AI-In-Robotics
 
 3️⃣ Create and activate a virtual environment
   python -m venv venv
@@ -63,5 +71,9 @@ If you don’t have a requirements.txt, here’s what to include:
   opencv-python
   
   pillow
+  
   tk
+
+To run 
+    python Front end.py
 
