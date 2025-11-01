@@ -38,11 +38,17 @@ The interface shows:
 
 ## 📦 Requirements
 Given the model.ipynd and Front end.py is already in the code submission link you can opt to download the dataset from the repo:
+
 [https://github.com/magala20-alt/AI-In-Robotics]
+
 Create a .env file
+
   create variables:
+  
       DATASET_PATH= " "
+      
       TEST_PATH= " "
+      
   Fill corresponding filepaths 
   
 # Otherwise .....
