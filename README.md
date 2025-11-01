@@ -44,7 +44,7 @@ Given the model.ipynb and Front end.py is already in the code submission link yo
 
 [https://github.com/magala20-alt/AI-In-Robotics]
 
-Create a file named ".env file" in the project root
+Create a file named ".env" in the project root
 
 create variables:
 
