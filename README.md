@@ -97,3 +97,9 @@ tk
 
 To run
 python Front end.py
+
+## Contributors
+
+Angel Magala - AI Model and GUI connection, and AI model to web camera connection
+Sebabatso Maloi -AI model development
+Mehtaab Andoo - GUI
